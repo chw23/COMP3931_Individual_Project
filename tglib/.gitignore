@@ -1,0 +1,31 @@
+# Python packaging
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# scikit-build
+_skbuild/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+CTestTestfile.cmake
+
+# Compiled bindings
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# Pytest
+.pytest_cache/
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+*.kate-swp

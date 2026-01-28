@@ -1,0 +1,23 @@
+# pyproject.toml
+
+[build-system]
+requires = ["scikit-build-core>=0.8", "pybind11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "temporalgraphlib"
+version = "1.7.0"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: C++",
+]
+
+[tool.scikit-build]
+cmake.source-dir = "tglib_cpp"
+cmake.args = ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
