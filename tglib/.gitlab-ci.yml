@@ -1,0 +1,127 @@
+image: python:3.9
+
+stages:
+  - build
+  - test
+  - wheel
+  - sdist
+  - deploy
+  - docs
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux*"
+  CIBW_BUILD_VERBOSITY: 1
+  CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+  CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-* cp313-*"
+
+before_script:
+  - apt-get update && apt-get install -y git cmake g++ python3-pip
+
+# -----------------------------------
+# C++ Build
+# -----------------------------------
+build-job:
+  stage: build
+  script:
+    - cd tglib_cpp
+    - git submodule update --init --recursive
+    - mkdir build && cd build
+    - export CXXFLAGS="-Wno-error=restrict"
+    - cmake .. -DCMAKE_BUILD_TYPE=Release
+    - make
+  artifacts:
+    untracked: true
+
+# -----------------------------------
+# C++ Tests
+# -----------------------------------
+unit-test-job:
+  stage: test
+  needs:
+    - build-job
+  script:
+    - cd tglib_cpp/build/test
+    - ctest
+
+# -----------------------------------
+# Python Wheel Build (manylinux via Docker)
+# -----------------------------------
+python-wheel-job:
+  stage: wheel
+  image: python:3.11-slim-bullseye
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apt-get update && apt-get install -y docker.io python3-pip python3-setuptools python3-wheel python3-dev git cmake g++
+    - pip3 install --upgrade pip
+    - pip3 install scikit-build pybind11 setuptools wheel
+    - pip3 install cibuildwheel
+    - docker --version
+  script:
+    - python3 -m cibuildwheel --output-dir dist
+    - ls dist/
+  artifacts:
+    paths:
+      - dist/*.whl
+
+
+# -----------------------------------
+# Source Distribution Build
+# -----------------------------------
+build-sdist:
+  stage: sdist
+  image: python:3.9
+  before_script:
+    - pip install --upgrade pip build
+  script:
+    - python -m build --sdist --outdir dist
+  artifacts:
+    paths:
+      - dist/*.tar.gz
+
+
+# -----------------------------------
+# Upload to PyPI
+# -----------------------------------
+upload-testpypi:
+  stage: deploy
+  image: python:3.9
+  needs:
+    - python-wheel-job
+    - build-sdist
+  rules:
+    - when: always
+  environment:
+    name: release
+  before_script:
+    - pip install --upgrade pip twine
+  id_tokens:
+#    TESTPYPI_ID_TOKEN: #
+#      aud: testpypi
+    PYPI_ID_TOKEN: #
+      aud: pypi
+  script:
+    #- twine upload --non-interactive --repository testpypi dist/*.whl
+    - twine upload --non-interactive dist/*.whl
+
+# -----------------------------------
+# Documentation
+# -----------------------------------
+pages:
+  stage: docs
+  script:
+    - apt-get update && apt-get install -y doxygen
+    - cd tglib_cpp && mkdir build-doc && cd build-doc
+    - cmake .. -DCMAKE_BUILD_TYPE=Release
+    - make doxygen
+    - cd ../..
+    - mkdir public && cp -a tglib_cpp/build-doc/html/. public
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
