@@ -52,7 +52,7 @@ def main():
     # Step 1: Load the graph
     print("\n[1/5] Loading ordered edge list...")
     start_time = time.time()
-    tgs = tgl.load_ordered_edge_list("cached_datasets/tgbl_flight.tg")
+    tgs = tgl.load_ordered_edge_list("../cached_datasets/tgbl_flight_filtered.tg")
     print(f"      Done! Loaded in {time.time() - start_time:.2f}s")
 
     # Step 2: Get statistics
