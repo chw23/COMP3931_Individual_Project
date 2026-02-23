@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flight Path Chat</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: #f5f6f8;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 900px;
+      margin: 24px auto;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    .header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      background: #fafafa;
+    }
+    .title {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+    .chat {
+      height: 62vh;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #ffffff;
+    }
+    .msg {
+      max-width: 80%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    .composer {
+      border-top: 1px solid #e5e7eb;
+      padding: 12px;
+      display: flex;
+      gap: 8px;
+      background: #fafafa;
+    }
+    input, select, button {
+      font: inherit;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    #messageInput {
+      flex: 1;
+    }
+    button {
+      cursor: pointer;
+      background: #111827;
+      color: #ffffff;
+      border-color: #111827;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+    .status {
+      font-size: 12px;
+      color: #6b7280;
+      padding: 0 12px 10px;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <h1 class="title">Flight Path Chat</h1>
+      <div class="controls">
+        <label for="datasetSelect">Dataset:</label>
+        <select id="datasetSelect"></select>
+        <button id="newSessionBtn" type="button">New Session</button>
+      </div>
+    </header>
+
+    <section id="chatBox" class="chat"></section>
+
+    <form id="chatForm" class="composer">
+      <input id="messageInput" type="text" placeholder="Type to start chatting" autocomplete="off" required />
+      <button id="sendBtn" type="submit">Send</button>
+    </form>
+    <div id="statusText" class="status">Ready</div>
+  </main>
+
+  <script>
+    const chatBox = document.getElementById("chatBox");
+    const chatForm = document.getElementById("chatForm");
+    const messageInput = document.getElementById("messageInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const statusText = document.getElementById("statusText");
+    const datasetSelect = document.getElementById("datasetSelect");
+    const newSessionBtn = document.getElementById("newSessionBtn");
+
+    let sessionId = localStorage.getItem("flight_chat_session_id") || crypto.randomUUID();
+    localStorage.setItem("flight_chat_session_id", sessionId);
+
+    function setStatus(text) {
+      statusText.textContent = text;
+    }
+
+    function appendMessage(role, text) {
+      const bubble = document.createElement("div");
+      bubble.className = `msg ${role}`;
+      bubble.textContent = text;
+      chatBox.appendChild(bubble);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    async function loadDatasets() {
+      const res = await fetch("/api/datasets");
+      if (!res.ok) throw new Error("Failed to load datasets");
+      const data = await res.json();
+
+      datasetSelect.innerHTML = "";
+      for (const item of data.datasets) {
+        const option = document.createElement("option");
+        option.value = item.choice;
+        option.textContent = `${item.choice}. ${item.label}`;
+        if (item.choice === data.active_choice) {
+          option.selected = true;
+        }
+        datasetSelect.appendChild(option);
+      }
+    }
+
+    async function setDataset(choice) {
+      const res = await fetch("/api/dataset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ choice: Number(choice) })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to set dataset");
+      }
+
+      const data = await res.json();
+      appendMessage("assistant", `Switched dataset to ${data.label} (${data.filename}).`);
+    }
+
+    datasetSelect.addEventListener("change", async (e) => {
+      try {
+        sendBtn.disabled = true;
+        setStatus("Switching dataset...");
+        await setDataset(e.target.value);
+        setStatus("Dataset updated");
+      } catch (err) {
+        appendMessage("assistant", `Error: ${err.message}`);
+        setStatus("Failed to switch dataset");
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+
+    newSessionBtn.addEventListener("click", () => {
+      sessionId = crypto.randomUUID();
+      localStorage.setItem("flight_chat_session_id", sessionId);
+      appendMessage("assistant", "Started a new chat session.");
+      setStatus("New session created");
+    });
+
+    chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = messageInput.value.trim();
+      if (!message) return;
+
+      appendMessage("user", message);
+      messageInput.value = "";
+      sendBtn.disabled = true;
+      setStatus("Thinking...");
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, session_id: sessionId })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Request failed");
+        }
+
+        sessionId = data.session_id;
+        localStorage.setItem("flight_chat_session_id", sessionId);
+        appendMessage("assistant", data.reply);
+        setStatus("Ready");
+      } catch (err) {
+        appendMessage("assistant", `Error: ${err.message}`);
+        setStatus("Error");
+      } finally {
+        sendBtn.disabled = false;
+        messageInput.focus();
+      }
+    });
+
+    (async function init() {
+      appendMessage("assistant", "Flight Path Chat is ready. Ask for routes like: fastest route from VHHH to EGCC.");
+      try {
+        await loadDatasets();
+      } catch (err) {
+        appendMessage("assistant", `Error loading datasets: ${err.message}`);
+      }
+      messageInput.focus();
+    })();
+  </script>
+</body>
+</html>

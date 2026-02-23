@@ -2,8 +2,11 @@ import os
 import uuid
 from typing import Optional
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from llama import (
@@ -12,6 +15,9 @@ from llama import (
     load_graph,
     set_active_dataset,
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,8 +31,10 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("FLIGHT_DATASET_CHOICE must be between 1 and 10.")
 
     _set_and_load_dataset(choice)
+    yield
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # User input structure with id -> for short term memory
 class ChatRequest(BaseModel):
@@ -64,6 +72,11 @@ def _set_and_load_dataset(choice: int) -> DatasetResponse:
         label=DATASET_LABELS[choice],
         filename=selected_path.name,
     )
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/health")
