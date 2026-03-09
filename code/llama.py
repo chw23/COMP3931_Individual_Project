@@ -325,6 +325,27 @@ def minimum_hops_path(start_airport: str, target_airport: str) -> str:
     )
     return format_path_result(path, "minimum hops path")
 
+@tool
+def list_available_airports() -> str:
+    """
+    List all available airports in the currently loaded dataset.
+    This can help users know which airport codes are valid for queries.
+    """
+    load_graph()
+    
+    if _graph_state["tgs"] is None:
+        return "No graph data loaded. Please load a dataset first."
+    
+    node_map = _graph_state["tgs"].getNodeMap()
+    reverse_map = _graph_state["tgs"].getReverseNodeMap()
+    
+    airports = []
+    for internal_id, original_id in enumerate(reverse_map):
+        code = get_airport_code_from_original(original_id) or "UNKNOWN"
+        airports.append(f"{code} (original ID: {original_id})")
+    
+    return "Available airports in the current dataset:\n" + "\n".join(airports)
+
 
 # =============================================================================
 # Agent Setup
@@ -335,7 +356,8 @@ tools = [
     minimum_duration_path,
     earliest_arrival_path,
     minimum_transition_time_path,
-    minimum_hops_path
+    minimum_hops_path,
+    list_available_airports
 ]
 
 # Model setup
