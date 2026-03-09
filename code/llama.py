@@ -174,6 +174,51 @@ def format_path_result(path, algorithm_name: str) -> str:
     return result
 
 
+def _path_duration_seconds(path) -> int:
+    """Return total in-flight duration for a path (sum of edge transition times)."""
+    return sum(edge.tt for edge in path)
+
+
+def _nodes_in_path(start_internal: int, path) -> list[int]:
+    """Return node sequence visited by a path, including the start node."""
+    nodes = [start_internal]
+    for edge in path:
+        nodes.append(edge.v)
+    return nodes
+
+
+def _find_fastest_path_to_any_target(start_internal: int, candidate_targets: set[int]):
+    """Find fastest (minimum-duration) path from start to any candidate target.
+
+    Returns:
+        tuple[target_internal | None, path]
+    """
+    best_target = None
+    best_path = []
+    best_score = None
+
+    for target_internal in sorted(candidate_targets):
+        if target_internal == start_internal:
+            continue
+
+        path = tgl.minimum_duration_path(
+            _graph_state["tg"],
+            start_internal,
+            target_internal,
+            _graph_state["ti"],
+        )
+        if len(path) == 0:
+            continue
+
+        score = (_path_duration_seconds(path), len(path), target_internal)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_target = target_internal
+            best_path = path
+
+    return best_target, best_path
+
+
 # =============================================================================
 # Tool Definitions - Using @tool decorator from langchain_core.tools
 # =============================================================================
@@ -346,6 +391,106 @@ def list_available_airports() -> str:
     
     return "Available airports in the current dataset:\n" + "\n".join(airports)
 
+@tool
+def greedy_algo() -> str:
+    """
+    Cover all nodes using the smallest number of minimum temporal paths.
+    Implemented by iterations of TGL's minimum duration path finding methods.
+    """
+    load_graph()
+
+    if _graph_state["tgs"] is None:
+        return "No graph data loaded. Please load a dataset first."
+
+    reverse_map = _graph_state["tgs"].getReverseNodeMap()
+    node_count = len(reverse_map)
+
+    if node_count == 0:
+        return "The current dataset has no nodes."
+
+    uncovered = set(range(node_count))
+    routes = []
+
+    while uncovered:
+        start = min(uncovered)
+
+        first_target, first_path = _find_fastest_path_to_any_target(start, uncovered)
+
+        if first_target is None:
+            uncovered.remove(start)
+            routes.append(
+                {
+                    "start": start,
+                    "path": [],
+                    "covered_now": {start},
+                }
+            )
+            continue
+
+        route_path = list(first_path)
+        route_nodes = set(_nodes_in_path(start, route_path))
+        current = first_target
+
+        while True:
+            remaining_uncovered = uncovered - route_nodes
+            if not remaining_uncovered:
+                break
+
+            next_target, extension = _find_fastest_path_to_any_target(current, remaining_uncovered)
+            if next_target is None or len(extension) == 0:
+                break
+
+            previous_current = current
+            route_path.extend(extension)
+            route_nodes.update(_nodes_in_path(previous_current, extension))
+            current = next_target
+
+        covered_now = uncovered.intersection(route_nodes)
+        uncovered -= covered_now
+
+        routes.append(
+            {
+                "start": start,
+                "path": route_path,
+                "covered_now": covered_now,
+            }
+        )
+
+    lines = [
+        f"Greedy route cover completed: {len(routes)} route(s) to cover {node_count} node(s).",
+        "",
+    ]
+
+    for idx, route in enumerate(routes, 1):
+        start_internal = route["start"]
+        path = route["path"]
+        covered_now = route["covered_now"]
+
+        start_original = get_original_node_id(start_internal)
+        start_code = get_airport_code_from_original(start_original) or "UNKNOWN"
+
+        if len(path) == 0:
+            lines.append(
+                f"Route {idx}: {start_code} ({start_original}) [isolated/no reachable uncovered node], "
+                f"newly covered nodes: {len(covered_now)}"
+            )
+            continue
+
+        node_seq = _nodes_in_path(start_internal, path)
+        airport_seq = []
+        for internal_id in node_seq:
+            original_id = get_original_node_id(internal_id)
+            code = get_airport_code_from_original(original_id) or "UNKNOWN"
+            airport_seq.append(f"{code} ({original_id})")
+
+        lines.append(
+            f"Route {idx}: flights={len(path)}, total_duration={_path_duration_seconds(path)}s, "
+            f"newly covered nodes={len(covered_now)}"
+        )
+        lines.append("  " + " -> ".join(airport_seq))
+
+    return "\n".join(lines)
+
 
 # =============================================================================
 # Agent Setup
@@ -357,7 +502,8 @@ tools = [
     earliest_arrival_path,
     minimum_transition_time_path,
     minimum_hops_path,
-    list_available_airports
+    list_available_airports,
+    greedy_algo
 ]
 
 # Model setup
@@ -381,12 +527,14 @@ You have access to these tools:
 - earliest_arrival_path: Finds the route that gets you there soonest
 - minimum_transition_time_path: Finds the route with least layover/waiting time
 - minimum_hops_path: Finds the route with fewest connections/stops
+- greedy_algo: Covers all graph nodes with greedy concatenations of fastest temporal paths
 
 Algorithm Selection Rules:
 - If user wants "fastest", "quickest", or "minimum travel time" → use minimum_duration_path
 - If user wants to "arrive early/soonest" or "earliest arrival" → use earliest_arrival_path
 - If user wants "least waiting", "minimal layovers", or "shortest transitions" → use minimum_transition_time_path
 - If user wants "fewest stops", "direct", "least connections", or "fewest flights" → use minimum_hops_path
+- If user asks to cover all airports/nodes with minimum number of fastest temporal routes → use greedy_algo
 
 Always extract the source and destination airport codes (e.g., VHHH, EGCC) from the query and call the appropriate tool.
 After receiving the tool result, provide a clear, natural language summary to the user."""
