@@ -408,6 +408,7 @@ def greedy_algo() -> str:
     if node_count == 0:
         return "The current dataset has no nodes."
 
+    # initialise the list of nodes that have not been visited yet
     uncovered = set(range(node_count))
     routes = []
 
@@ -510,7 +511,7 @@ tools = [
 model = ChatOllama(
     model="llama3.1:8b",
     temperature=0.0,  # Lower temperature for more deterministic tool selection
-    num_predict=512,
+    num_ctx=4096,
     base_url="http://localhost:11434"
 )
 
@@ -527,6 +528,7 @@ You have access to these tools:
 - earliest_arrival_path: Finds the route that gets you there soonest
 - minimum_transition_time_path: Finds the route with least layover/waiting time
 - minimum_hops_path: Finds the route with fewest connections/stops
+- list_available_airports: Lists all airports available in the currently loaded dataset
 - greedy_algo: Covers all graph nodes with greedy concatenations of fastest temporal paths
 
 Algorithm Selection Rules:
@@ -535,9 +537,14 @@ Algorithm Selection Rules:
 - If user wants "least waiting", "minimal layovers", or "shortest transitions" → use minimum_transition_time_path
 - If user wants "fewest stops", "direct", "least connections", or "fewest flights" → use minimum_hops_path
 - If user asks to cover all airports/nodes with minimum number of fastest temporal routes → use greedy_algo
+- If user asks for available airports in the dataset → use list_available_airports
 
-Always extract the source and destination airport codes (e.g., VHHH, EGCC) from the query and call the appropriate tool.
-After receiving the tool result, provide a clear, natural language summary to the user."""
+Always extract the source and destination airport codes from the query and call the appropriate tool.
+After receiving the tool result, provide a clear, natural language summary to the user with time format HH:MM:SS. 
+Be concise but informative in your responses. 
+If the user query is ambiguous, ask for clarification on which aspect they want to optimize for (e.g., fastest vs earliest arrival). 
+Always ensure that the airport codes are valid and present in the dataset before calling the tools.
+"""
 
 # Create the agent with checkpointer for short-term memory
 agent = create_agent(
