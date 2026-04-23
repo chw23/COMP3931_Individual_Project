@@ -1,0 +1,79 @@
+[
+  {
+    "id": "Q1",
+    "query": "Find the fastest route from airport A to airport B.",
+    "expected_tool": "minimum_duration_path",
+    "invoke": true,
+    "justification": "The word 'fastest' should route to minimum_duration_path."
+  },
+  {
+    "id": "Q2",
+    "query": "What is the quickest path between two airports?",
+    "expected_tool": "minimum_duration_path",
+    "invoke": true,
+    "justification": "The word 'quickest' should route to minimum_duration_path."
+  },
+  {
+    "id": "Q3",
+    "query": "I need to arrive as early as possible.",
+    "expected_tool": "earliest_arrival_path",
+    "invoke": true,
+    "justification": "The phrase 'arrive as early as possible' should route to earliest_arrival_path."
+  },
+  {
+    "id": "Q4",
+    "query": "Show the earliest arrival option.",
+    "expected_tool": "earliest_arrival_path",
+    "invoke": true,
+    "justification": "The phrase 'earliest arrival' should route to earliest_arrival_path."
+  },
+  {
+    "id": "Q5",
+    "query": "I want least waiting time between connections.",
+    "expected_tool": "minimum_transition_time_path",
+    "invoke": true,
+    "justification": "The phrase 'least waiting' should route to minimum_transition_time_path."
+  },
+  {
+    "id": "Q6",
+    "query": "Find a route with minimal layovers.",
+    "expected_tool": "minimum_transition_time_path",
+    "invoke": true,
+    "justification": "The phrase 'minimal layovers' should route to minimum_transition_time_path."
+  },
+  {
+    "id": "Q7",
+    "query": "Give me the route with fewest stops.",
+    "expected_tool": "minimum_hops_path",
+    "invoke": true,
+    "justification": "The phrase 'fewest stops' should route to minimum_hops_path."
+  },
+  {
+    "id": "Q8",
+    "query": "I need the least connections route.",
+    "expected_tool": "minimum_hops_path",
+    "invoke": true,
+    "justification": "The phrase 'least connections' should route to minimum_hops_path."
+  },
+  {
+    "id": "Q9",
+    "query": "List available airports in this dataset.",
+    "expected_tool": "list_available_airports",
+    "invoke": true,
+    "justification": "The phrase 'available airports' should route to list_available_airports."
+  },
+  {
+    "id": "Q10",
+    "query": "Cover all graph nodes with fastest temporal routes.",
+    "expected_tool": "greedy_algo",
+    "invoke": false,
+    "justification": "This should route to greedy_algo; direct invocation is skipped in the test for runtime control."
+  },
+  {
+    "id": "Q11",
+    "query": "Plan a route from A to B.",
+    "expected_tool": null,
+    "invoke": false,
+    "justification": "This is intentionally ambiguous and should request clarification instead of selecting a tool."
+  }
+]

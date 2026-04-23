@@ -1,5 +1,6 @@
 import logging
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -157,11 +158,48 @@ def get_airport_code_from_original(original_id: int) -> Optional[str]:
     return _graph_state["original_to_code"].get(original_id)
 
 
+def _format_seconds_hhmmss(total_seconds: int) -> str:
+    """Format seconds as HH:MM:SS, allowing hours greater than 24."""
+    seconds = max(int(total_seconds), 0)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _format_unix_timestamp_utc(unix_seconds: int) -> str:
+    """Format a Unix timestamp into UTC date-time text."""
+    dt = datetime.fromtimestamp(int(unix_seconds), tz=timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _path_waiting_seconds(path) -> int:
+    """Return total waiting/layover time between consecutive flights in a path."""
+    waiting = 0
+    for current_edge, next_edge in zip(path, path[1:]):
+        current_arrival = current_edge.t + current_edge.tt
+        waiting += max(0, next_edge.t - current_arrival)
+    return waiting
+
+
+def _path_elapsed_seconds(path) -> int:
+    """Return elapsed journey time from first departure to final arrival."""
+    if len(path) == 0:
+        return 0
+    first_departure = path[0].t
+    final_arrival = path[-1].t + path[-1].tt
+    return max(0, final_arrival - first_departure)
+
+
 def format_path_result(path, algorithm_name: str) -> str:
     """Format the path result into human-readable text."""
     if len(path) == 0:
         return "No path found between the specified airports within the given time interval."
-    
+
+    in_flight_seconds = _path_duration_seconds(path)
+    waiting_seconds = _path_waiting_seconds(path)
+    elapsed_seconds = _path_elapsed_seconds(path)
+
     result = f"Found {algorithm_name} with {len(path)} flight(s):\n"
     for i, edge in enumerate(path, 1):
         # edge contains: u (source), v (dest), t (timestamp), tt (transition time)
@@ -169,8 +207,27 @@ def format_path_result(path, algorithm_name: str) -> str:
         dst_original = get_original_node_id(edge.v)
         src_code = get_airport_code_from_original(src_original) or "UNKNOWN"
         dst_code = get_airport_code_from_original(dst_original) or "UNKNOWN"
+        arrival_time = edge.t + edge.tt
+        departure_utc = _format_unix_timestamp_utc(edge.t)
+        arrival_utc = _format_unix_timestamp_utc(arrival_time)
         result += f"  Flight {i}: {src_code} ({src_original}) → {dst_code} ({dst_original}) "
-        result += f"(Departure: {edge.t}, Duration: {edge.tt}s)\n"
+        result += (
+            f"(Departure: {edge.t} [{departure_utc}], Arrival: {arrival_time} [{arrival_utc}], "
+            f"Duration: {edge.tt}s / {_format_seconds_hhmmss(edge.tt)})\n"
+        )
+
+    first_departure = path[0].t
+    final_arrival = path[-1].t + path[-1].tt
+
+    result += (
+        "\nJourney timing summary:\n"
+        f"  - First departure: {first_departure} ({_format_unix_timestamp_utc(first_departure)})\n"
+        f"  - Final arrival: {final_arrival} ({_format_unix_timestamp_utc(final_arrival)})\n"
+        f"  - In-flight time: {in_flight_seconds}s ({_format_seconds_hhmmss(in_flight_seconds)})\n"
+        f"  - Waiting/layover time: {waiting_seconds}s ({_format_seconds_hhmmss(waiting_seconds)})\n"
+        f"  - Total elapsed time (departure to arrival): {elapsed_seconds}s ({_format_seconds_hhmmss(elapsed_seconds)})"
+    )
+
     return result
 
 
@@ -370,6 +427,27 @@ def minimum_hops_path(start_airport: str, target_airport: str) -> str:
     )
     return format_path_result(path, "minimum hops path")
 
+
+@tool
+def convert_unix_timestamp(timestamp_seconds: int) -> str:
+    """
+    Convert a Unix timestamp to UTC date-time.
+
+    Args:
+        timestamp_seconds: Unix timestamp in seconds.
+    """
+    try:
+        ts = int(timestamp_seconds)
+    except (TypeError, ValueError):
+        return f"Error: '{timestamp_seconds}' is not a valid integer Unix timestamp."
+
+    try:
+        utc_text = _format_unix_timestamp_utc(ts)
+    except (OverflowError, OSError, ValueError) as exc:
+        return f"Error: Cannot convert timestamp {ts}: {exc}"
+
+    return f"{ts} -> {utc_text}"
+
 @tool
 def list_available_airports() -> str:
     """
@@ -503,6 +581,7 @@ tools = [
     earliest_arrival_path,
     minimum_transition_time_path,
     minimum_hops_path,
+    convert_unix_timestamp,
     list_available_airports,
     greedy_algo
 ]
@@ -528,6 +607,7 @@ You have access to these tools:
 - earliest_arrival_path: Finds the route that gets you there soonest
 - minimum_transition_time_path: Finds the route with least layover/waiting time
 - minimum_hops_path: Finds the route with fewest connections/stops
+- convert_unix_timestamp: Converts Unix timestamps to UTC date-time text
 - list_available_airports: Lists all airports available in the currently loaded dataset
 - greedy_algo: Covers all graph nodes with greedy concatenations of fastest temporal paths
 
@@ -538,9 +618,11 @@ Algorithm Selection Rules:
 - If user wants "fewest stops", "direct", "least connections", or "fewest flights" → use minimum_hops_path
 - If user asks to cover all airports/nodes with minimum number of fastest temporal routes → use greedy_algo
 - If user asks for available airports in the dataset → use list_available_airports
+- If user asks to translate/convert timestamps to calendar date-time → use convert_unix_timestamp
 
 Always extract the source and destination airport codes from the query and call the appropriate tool.
-After receiving the tool result, provide a clear, natural language summary to the user with time format HH:MM:SS. 
+After receiving the tool result, provide a clear, natural language summary to the user with time format HH:MM:SS.
+For calendar date-time, treat Unix timestamps as UTC and do not infer a date-time without the conversion tool output.
 Be concise but informative in your responses. 
 If the user query is ambiguous, ask for clarification on which aspect they want to optimize for (e.g., fastest vs earliest arrival). 
 Always ensure that the airport codes are valid and present in the dataset before calling the tools.
