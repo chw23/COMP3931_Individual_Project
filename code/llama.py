@@ -1,5 +1,6 @@
 import logging
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -157,11 +158,48 @@ def get_airport_code_from_original(original_id: int) -> Optional[str]:
     return _graph_state["original_to_code"].get(original_id)
 
 
+def _format_seconds_hhmmss(total_seconds: int) -> str:
+    """Format seconds as HH:MM:SS, allowing hours greater than 24."""
+    seconds = max(int(total_seconds), 0)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _format_unix_timestamp_utc(unix_seconds: int) -> str:
+    """Format a Unix timestamp into UTC date-time text."""
+    dt = datetime.fromtimestamp(int(unix_seconds), tz=timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _path_waiting_seconds(path) -> int:
+    """Return total waiting/layover time between consecutive flights in a path."""
+    waiting = 0
+    for current_edge, next_edge in zip(path, path[1:]):
+        current_arrival = current_edge.t + current_edge.tt
+        waiting += max(0, next_edge.t - current_arrival)
+    return waiting
+
+
+def _path_elapsed_seconds(path) -> int:
+    """Return elapsed journey time from first departure to final arrival."""
+    if len(path) == 0:
+        return 0
+    first_departure = path[0].t
+    final_arrival = path[-1].t + path[-1].tt
+    return max(0, final_arrival - first_departure)
+
+
 def format_path_result(path, algorithm_name: str) -> str:
     """Format the path result into human-readable text."""
     if len(path) == 0:
         return "No path found between the specified airports within the given time interval."
-    
+
+    in_flight_seconds = _path_duration_seconds(path)
+    waiting_seconds = _path_waiting_seconds(path)
+    elapsed_seconds = _path_elapsed_seconds(path)
+
     result = f"Found {algorithm_name} with {len(path)} flight(s):\n"
     for i, edge in enumerate(path, 1):
         # edge contains: u (source), v (dest), t (timestamp), tt (transition time)
@@ -169,9 +207,73 @@ def format_path_result(path, algorithm_name: str) -> str:
         dst_original = get_original_node_id(edge.v)
         src_code = get_airport_code_from_original(src_original) or "UNKNOWN"
         dst_code = get_airport_code_from_original(dst_original) or "UNKNOWN"
+        arrival_time = edge.t + edge.tt
+        departure_utc = _format_unix_timestamp_utc(edge.t)
+        arrival_utc = _format_unix_timestamp_utc(arrival_time)
         result += f"  Flight {i}: {src_code} ({src_original}) → {dst_code} ({dst_original}) "
-        result += f"(Departure: {edge.t}, Duration: {edge.tt}s)\n"
+        result += (
+            f"(Departure: {edge.t} [{departure_utc}], Arrival: {arrival_time} [{arrival_utc}], "
+            f"Duration: {edge.tt}s / {_format_seconds_hhmmss(edge.tt)})\n"
+        )
+
+    first_departure = path[0].t
+    final_arrival = path[-1].t + path[-1].tt
+
+    result += (
+        "\nJourney timing summary:\n"
+        f"  - First departure: {first_departure} ({_format_unix_timestamp_utc(first_departure)})\n"
+        f"  - Final arrival: {final_arrival} ({_format_unix_timestamp_utc(final_arrival)})\n"
+        f"  - In-flight time: {in_flight_seconds}s ({_format_seconds_hhmmss(in_flight_seconds)})\n"
+        f"  - Waiting/layover time: {waiting_seconds}s ({_format_seconds_hhmmss(waiting_seconds)})\n"
+        f"  - Total elapsed time (departure to arrival): {elapsed_seconds}s ({_format_seconds_hhmmss(elapsed_seconds)})"
+    )
+
     return result
+
+
+def _path_duration_seconds(path) -> int:
+    """Return total in-flight duration for a path (sum of edge transition times)."""
+    return sum(edge.tt for edge in path)
+
+
+def _nodes_in_path(start_internal: int, path) -> list[int]:
+    """Return node sequence visited by a path, including the start node."""
+    nodes = [start_internal]
+    for edge in path:
+        nodes.append(edge.v)
+    return nodes
+
+
+def _find_fastest_path_to_any_target(start_internal: int, candidate_targets: set[int]):
+    """Find fastest (minimum-duration) path from start to any candidate target.
+
+    Returns:
+        tuple[target_internal | None, path]
+    """
+    best_target = None
+    best_path = []
+    best_score = None
+
+    for target_internal in sorted(candidate_targets):
+        if target_internal == start_internal:
+            continue
+
+        path = tgl.minimum_duration_path(
+            _graph_state["tg"],
+            start_internal,
+            target_internal,
+            _graph_state["ti"],
+        )
+        if len(path) == 0:
+            continue
+
+        score = (_path_duration_seconds(path), len(path), target_internal)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_target = target_internal
+            best_path = path
+
+    return best_target, best_path
 
 
 # =============================================================================
@@ -326,6 +428,149 @@ def minimum_hops_path(start_airport: str, target_airport: str) -> str:
     return format_path_result(path, "minimum hops path")
 
 
+@tool
+def convert_unix_timestamp(timestamp_seconds: int) -> str:
+    """
+    Convert a Unix timestamp to UTC date-time.
+
+    Args:
+        timestamp_seconds: Unix timestamp in seconds.
+    """
+    try:
+        ts = int(timestamp_seconds)
+    except (TypeError, ValueError):
+        return f"Error: '{timestamp_seconds}' is not a valid integer Unix timestamp."
+
+    try:
+        utc_text = _format_unix_timestamp_utc(ts)
+    except (OverflowError, OSError, ValueError) as exc:
+        return f"Error: Cannot convert timestamp {ts}: {exc}"
+
+    return f"{ts} -> {utc_text}"
+
+@tool
+def list_available_airports() -> str:
+    """
+    List all available airports in the currently loaded dataset.
+    This can help users know which airport codes are valid for queries.
+    """
+    load_graph()
+    
+    if _graph_state["tgs"] is None:
+        return "No graph data loaded. Please load a dataset first."
+    
+    node_map = _graph_state["tgs"].getNodeMap()
+    reverse_map = _graph_state["tgs"].getReverseNodeMap()
+    
+    airports = []
+    for internal_id, original_id in enumerate(reverse_map):
+        code = get_airport_code_from_original(original_id) or "UNKNOWN"
+        airports.append(f"{code} (original ID: {original_id})")
+    
+    return "Available airports in the current dataset:\n" + "\n".join(airports)
+
+@tool
+def greedy_algo() -> str:
+    """
+    Cover all nodes using the smallest number of minimum temporal paths.
+    Implemented by iterations of TGL's minimum duration path finding methods.
+    """
+    load_graph()
+
+    if _graph_state["tgs"] is None:
+        return "No graph data loaded. Please load a dataset first."
+
+    reverse_map = _graph_state["tgs"].getReverseNodeMap()
+    node_count = len(reverse_map)
+
+    if node_count == 0:
+        return "The current dataset has no nodes."
+
+    # initialise the list of nodes that have not been visited yet
+    uncovered = set(range(node_count))
+    routes = []
+
+    while uncovered:
+        start = min(uncovered)
+
+        first_target, first_path = _find_fastest_path_to_any_target(start, uncovered)
+
+        if first_target is None:
+            uncovered.remove(start)
+            routes.append(
+                {
+                    "start": start,
+                    "path": [],
+                    "covered_now": {start},
+                }
+            )
+            continue
+
+        route_path = list(first_path)
+        route_nodes = set(_nodes_in_path(start, route_path))
+        current = first_target
+
+        while True:
+            remaining_uncovered = uncovered - route_nodes
+            if not remaining_uncovered:
+                break
+
+            next_target, extension = _find_fastest_path_to_any_target(current, remaining_uncovered)
+            if next_target is None or len(extension) == 0:
+                break
+
+            previous_current = current
+            route_path.extend(extension)
+            route_nodes.update(_nodes_in_path(previous_current, extension))
+            current = next_target
+
+        covered_now = uncovered.intersection(route_nodes)
+        uncovered -= covered_now
+
+        routes.append(
+            {
+                "start": start,
+                "path": route_path,
+                "covered_now": covered_now,
+            }
+        )
+
+    lines = [
+        f"Greedy route cover completed: {len(routes)} route(s) to cover {node_count} node(s).",
+        "",
+    ]
+
+    for idx, route in enumerate(routes, 1):
+        start_internal = route["start"]
+        path = route["path"]
+        covered_now = route["covered_now"]
+
+        start_original = get_original_node_id(start_internal)
+        start_code = get_airport_code_from_original(start_original) or "UNKNOWN"
+
+        if len(path) == 0:
+            lines.append(
+                f"Route {idx}: {start_code} ({start_original}) [isolated/no reachable uncovered node], "
+                f"newly covered nodes: {len(covered_now)}"
+            )
+            continue
+
+        node_seq = _nodes_in_path(start_internal, path)
+        airport_seq = []
+        for internal_id in node_seq:
+            original_id = get_original_node_id(internal_id)
+            code = get_airport_code_from_original(original_id) or "UNKNOWN"
+            airport_seq.append(f"{code} ({original_id})")
+
+        lines.append(
+            f"Route {idx}: flights={len(path)}, total_duration={_path_duration_seconds(path)}s, "
+            f"newly covered nodes={len(covered_now)}"
+        )
+        lines.append("  " + " -> ".join(airport_seq))
+
+    return "\n".join(lines)
+
+
 # =============================================================================
 # Agent Setup
 # =============================================================================
@@ -335,14 +580,17 @@ tools = [
     minimum_duration_path,
     earliest_arrival_path,
     minimum_transition_time_path,
-    minimum_hops_path
+    minimum_hops_path,
+    convert_unix_timestamp,
+    list_available_airports,
+    greedy_algo
 ]
 
 # Model setup
 model = ChatOllama(
     model="llama3.1:8b",
     temperature=0.0,  # Lower temperature for more deterministic tool selection
-    num_predict=512,
+    num_ctx=4096,
     base_url="http://localhost:11434"
 )
 
@@ -359,15 +607,26 @@ You have access to these tools:
 - earliest_arrival_path: Finds the route that gets you there soonest
 - minimum_transition_time_path: Finds the route with least layover/waiting time
 - minimum_hops_path: Finds the route with fewest connections/stops
+- convert_unix_timestamp: Converts Unix timestamps to UTC date-time text
+- list_available_airports: Lists all airports available in the currently loaded dataset
+- greedy_algo: Covers all graph nodes with greedy concatenations of fastest temporal paths
 
 Algorithm Selection Rules:
 - If user wants "fastest", "quickest", or "minimum travel time" → use minimum_duration_path
 - If user wants to "arrive early/soonest" or "earliest arrival" → use earliest_arrival_path
 - If user wants "least waiting", "minimal layovers", or "shortest transitions" → use minimum_transition_time_path
 - If user wants "fewest stops", "direct", "least connections", or "fewest flights" → use minimum_hops_path
+- If user asks to cover all airports/nodes with minimum number of fastest temporal routes → use greedy_algo
+- If user asks for available airports in the dataset → use list_available_airports
+- If user asks to translate/convert timestamps to calendar date-time → use convert_unix_timestamp
 
-Always extract the source and destination airport codes (e.g., VHHH, EGCC) from the query and call the appropriate tool.
-After receiving the tool result, provide a clear, natural language summary to the user."""
+Always extract the source and destination airport codes from the query and call the appropriate tool.
+After receiving the tool result, provide a clear, natural language summary to the user with time format HH:MM:SS.
+For calendar date-time, treat Unix timestamps as UTC and do not infer a date-time without the conversion tool output.
+Be concise but informative in your responses. 
+If the user query is ambiguous, ask for clarification on which aspect they want to optimize for (e.g., fastest vs earliest arrival). 
+Always ensure that the airport codes are valid and present in the dataset before calling the tools.
+"""
 
 # Create the agent with checkpointer for short-term memory
 agent = create_agent(
